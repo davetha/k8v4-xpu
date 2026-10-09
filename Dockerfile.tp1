@@ -1,0 +1,10 @@
+# k8v4 pieces that work at TP=1 on one Arc B70: MLP W4A8 prefill + TP-aware INT8 embedding.
+# The K8/V4 KV backend is omitted (hard-coded to 2 KV heads/GPU); KV stays fp8.
+FROM vllm/vllm-openai-xpu:v0.30.0@sha256:fc0e112afb64e3a06fe8daff34652435822a629412f38efce8f0f67a46636b8d
+COPY k8v4_v030 /opt/k8v4/k8v4_v030
+COPY sitecustomize_tp1.py /opt/k8v4/sitecustomize.py
+COPY k8v4_v030/embed_int8_runtime.py /opt/venv/lib/python3.12/site-packages/swift_embed_int8_runtime.py
+COPY tools/patch_embed_int8_v030.py /tmp/patch_embed_int8_v030.py
+ENV PYTHONPATH=/opt/k8v4 K8V4_PREFILL_GEMM=w4a8 VLLM_CACHE_ROOT=/root/.cache/vllm/w4a8-tp1-v1
+RUN python3 -m py_compile /opt/k8v4/k8v4_v030/w4a8_prefill.py /opt/k8v4/sitecustomize.py \
+ && python3 /tmp/patch_embed_int8_v030.py && PYTHONPATH=/workspace/vllm python3 /tmp/patch_embed_int8_v030.py

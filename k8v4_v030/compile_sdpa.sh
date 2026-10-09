@@ -6,7 +6,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 mkdir -p "$ROOT/build"
-docker run --rm --memory=1200m --memory-swap=3g --entrypoint bash \
+docker run --rm --memory=16g --entrypoint bash \
   -v "$ROOT/k8v4_v030/native:/src:ro" \
   -v "$ROOT/build:/out" \
   k8v4-compile-2026 -lc '

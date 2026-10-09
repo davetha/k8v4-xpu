@@ -41,16 +41,20 @@ static constexpr int NTN = BN / TN;
 static constexpr int PV_NCHUNK = 4;
 static constexpr int KV_HALF = BK / 2;
 static constexpr float INV_SQRT_D = 0.0625f;
-// TP2 local heads. The one-GPU kernel was HKV=4, HQ=24. Padding a TP rank's
-// 2 KV heads out to 4 makes the cache larger than FP8, so this build is the
-// native 2-head layout. Stage2's grid is resized with S2_NWG (below).
+// Local heads per GPU. TP2 ranks hold 2 KV / 12 Q heads; one Arc B70 holding the whole model (TP1)
+// holds 4 / 24. Build with -DK8V4_TP1 for the one-GPU layout. Stage2's grid follows HKV via S2_NWG.
+#ifdef K8V4_TP1
+static constexpr int HKV = 4;
+static constexpr int HQ = 24;
+#else
 static constexpr int HKV = 2;
 static constexpr int HQ = 12;
+#endif
 static constexpr int GQA = HQ / HKV;
 static constexpr int PAGE = BM;
 static constexpr int QQUANT_HEADS = HKV;
 static constexpr int STORE_WG = 32;
-static constexpr int S2_NWG = 16;
+static constexpr int S2_NWG = HKV * BM / 8;   // one row per stage-2 sub-group, 8 a work-group
 static constexpr int S2_SG_COUNT = 8;
 
 static constexpr int kSbytes = BM * BN * static_cast<int>(sizeof(float));
@@ -63,7 +67,7 @@ static_assert(BK % TK_I8 == 0, "int8 TK=32 must divide head dim 256");
 static_assert(TM == 8 && TN == 16, "bmg_g21 int8 tile is M<=8, N=16, K=32");
 static_assert(sizeof(at::Half) == sizeof(sycl::half), "fp16 width");
 static_assert(S2_NWG * S2_SG_COUNT == HKV * BM, "Stage2 1 row/SG");
-static_assert(GQA == 6 && HQ == HKV * GQA, "Qwen3.8-27B TP2 local GQA");
+static_assert(GQA == 6 && HQ == HKV * GQA, "Qwen3.8-27B local GQA (6 query heads a KV head)");
 
 static sycl::queue &current_xpu_queue() { return c10::xpu::getCurrentXPUStream().queue(); }
 

@@ -9,9 +9,12 @@ page is larger than FP8 on a rank and is not this layout.
 
 from __future__ import annotations
 
+import os as _os
+
 PAGE = 64
-HKV = 2
-HQ = 12
+# K8V4_TP1=1: one GPU holds all 4 KV / 24 Q heads (the library must be built with -DK8V4_TP1)
+HKV = 4 if _os.environ.get("K8V4_TP1") == "1" else 2
+HQ = 6 * HKV
 GQA = HQ // HKV
 D = 256
 V4_COLS = D // 2
