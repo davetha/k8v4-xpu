@@ -33,6 +33,31 @@ IMPORT_ANCHOR = "from typing import TYPE_CHECKING, Any\n"
 IMPORT_ANCHOR_NEW = "from typing import TYPE_CHECKING, Any, Final\n"
 OLD_DYNAMIC_OVERRIDE = 'def get_dynamic_override(\n    config: AutoGPTQConfig,\n    layer_name: str,\n    key: str | None = None,\n    default_value: int | bool | None = None,\n) -> dict | int | bool | None:\n    for pattern, pattern_dict in config.dynamic.items():\n        # Negative match: matched modules are excluded from quantized init\n        if pattern.startswith("-:"):\n            if re.match(pattern.removeprefix("-:"), layer_name):\n                return False\n        # Positive match: matched modules have quant properties overrides\n        # base quant config\n        elif re.match(pattern.removeprefix("+:"), layer_name):\n            if key is None:\n                return pattern_dict\n            else:\n                return pattern_dict.get(key, default_value)\n    return default_value\n'
 NEW_DYNAMIC_OVERRIDE = '_WRAPPER_SWAPS: Final = {\n    "model.language_model.": ("model.", "language_model.model."),\n    "model.": ("model.language_model.", "language_model.model."),\n    "language_model.model.": ("model.language_model.", "model."),\n}\n\ndef _dynamic_name_variants(layer_name: str) -> list[str]:\n    """Return the name forms one module can take across vLLM naming spaces.\n\n    Multimodal-wrapped checkpoints (e.g. Qwen3.5-VL-family text models) name a\n    tensor ``model.language_model.layers.0.self_attn.q_proj`` on disk, the\n    model\'s ``hf_to_vllm_mapper`` rewrites it to ``model.layers.0...`` at load\n    time, while the constructed module tree carries\n    ``language_model.model.layers.0...``. Dynamic quantization patterns are\n    authored against checkpoint names (the GPTQModel convention), but\n    ``get_dynamic_override`` is called with the module-tree name, so a pattern\n    written in any one form silently fails to match in the other two.\n    """\n    variants = [layer_name]\n    for prefix, alternates in _WRAPPER_SWAPS.items():\n        if layer_name.startswith(prefix):\n            rest = layer_name[len(prefix):]\n            variants.extend(alt + rest for alt in alternates)\n            break\n    seen: set[str] = set()\n    unique = [v for v in variants if not (v in seen or seen.add(v))]\n    return unique\n\n\ndef get_dynamic_override(\n    config: AutoGPTQConfig,\n    layer_name: str,\n    key: str | None = None,\n    default_value: int | bool | None = None,\n) -> dict | int | bool | None:\n    variants = _dynamic_name_variants(layer_name)\n    for pattern, pattern_dict in config.dynamic.items():\n        # Negative match: matched modules are excluded from quantized init\n        if pattern.startswith("-:"):\n            if any(re.match(pattern.removeprefix("-:"), v) for v in variants):\n                return False\n        # Positive match: matched modules have quant properties overrides\n        # base quant config\n        elif any(re.match(pattern.removeprefix("+:"), v) for v in variants):\n            if key is None:\n                return pattern_dict\n            else:\n                return pattern_dict.get(key, default_value)\n    return default_value\n'
+_ISLAND_WRAP_OLD = '            return UnquantizedLinearMethod()\n'
+_ISLAND_WRAP_NEW = (
+    '            try:\n'
+    '                from k8v4_v030.int8_island import maybe_island_method as _mk_island\n'
+    '                _island = _mk_island(prefix)\n'
+    '                if _island is not None:\n'
+    '                    return _island\n'
+    '            except ImportError:\n'
+    '                pass\n'
+    '            return UnquantizedLinearMethod()\n'
+)
+
+
+def _splice_island_wrap(path: Path) -> str:
+    """Wrap the UnquantizedLinearMethod return so K8V4_INT8_ISLANDS modules
+    get the int8 dequant-at-compute method instead (see k8v4_v030/int8_island.py)."""
+    text = path.read_text(encoding='utf-8')
+    if 'maybe_island_method' in text:
+        return 'unchanged'
+    if text.count(_ISLAND_WRAP_OLD) != 1:
+        raise RuntimeError('%s island anchor count %d' % (path, text.count(_ISLAND_WRAP_OLD)))
+    path.write_text(text.replace(_ISLAND_WRAP_OLD, _ISLAND_WRAP_NEW, 1), encoding='utf-8')
+    return 'patched'
+
+
 _DEFAULT_ROOTS = (
     Path("/opt/venv/lib/python3.12/site-packages/vllm"),
     Path("/workspace/vllm/vllm"),
@@ -79,6 +104,7 @@ def patch_vllm_tree(root: Path) -> list[str]:
             raise RuntimeError("missing %s" % path)
         notes.append("%s:%s" % (label, _splice(path, old, new, label)))
     notes.append("gptq_dynamic:%s" % _gptq_dynamic_fix(root / GPTQ_UTILS_REL))
+    notes.append("int8_island:%s" % _splice_island_wrap(root / GPTQ_UTILS_REL))
     return notes
 
 
